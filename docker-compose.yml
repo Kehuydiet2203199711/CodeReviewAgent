@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  code-review-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-review-agent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # ── GitLab Configuration ──────────────────────────────────────────────
+      - GitLab__BaseUrl=${GITLAB_BASE_URL:-https://gitlab.com}
+      - GitLab__PrivateToken=${GITLAB_PRIVATE_TOKEN}
+      - GitLab__WebhookSecret=${GITLAB_WEBHOOK_SECRET}
+
+      # ── Anthropic Configuration ───────────────────────────────────────────
+      - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
+      - Anthropic__Model=${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      - Anthropic__MaxTokens=${ANTHROPIC_MAX_TOKENS:-2000}
+
+      # ── ASP.NET Core ──────────────────────────────────────────────────────
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+      - ASPNETCORE_URLS=http://+:8080
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,6 @@
+@ProjectReviewCode_HostAddress = http://localhost:5291
+
+GET {{ProjectReviewCode_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

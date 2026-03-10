@@ -1,0 +1,44 @@
+## .NET / C#
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.userprefs
+*.pidb
+*.lock
+
+## Build output
+[Bb]in/
+[Oo]bj/
+[Pp]ublish/
+*.publish.xml
+*.pubxml
+*.pubxml.user
+artifacts/
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+!packages/build/
+
+## Environment / secrets
+.env
+appsettings.Production.json
+appsettings.Local.json
+
+## IDE
+.idea/
+.vscode/settings.json
+*.DotSettings.user
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Logs
+*.log
+logs/
