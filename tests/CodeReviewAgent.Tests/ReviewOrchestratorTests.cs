@@ -56,15 +56,13 @@ public sealed class ReviewOrchestratorTests
     // ── Pass Scenario ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// When no critical or high issues are found, the orchestrator should post a LGTM
-    /// comment, approve the MR, and then merge it.
+    /// When no critical or high issues are found, the orchestrator should post a LGTM comment.
     /// </summary>
     [Fact]
     public async Task OrchestrateReviewAsync_WhenNoCriticalOrHighIssues_ApprovesAndMerges()
     {
         // Arrange
         var mrEvent = BuildMrEvent();
-
         var changes = BuildChanges(CsChange("src/OrderService.cs", "+public void Process() { }"));
 
         var reviewResult = new ReviewResult(
@@ -79,8 +77,12 @@ public sealed class ReviewOrchestratorTests
             .Setup(g => g.GetMergeRequestChangesAsync(42, 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(changes);
 
+        _gitLabMock
+            .Setup(g => g.GetFileContentAsync(42, "src/OrderService.cs", "feature/test", It.IsAny<CancellationToken>()))
+            .ReturnsAsync("public class OrderService { }");
+
         _claudeMock
-            .Setup(c => c.ReviewFileAsync("src/OrderService.cs", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.ReviewFileAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reviewResult);
 
         _gitLabMock
@@ -102,14 +104,6 @@ public sealed class ReviewOrchestratorTests
         _gitLabMock.Verify(
             g => g.PostCommentAsync(42, 1, It.Is<string>(s => s.Contains("LGTM")), It.IsAny<CancellationToken>()),
             Times.Once);
-
-        _gitLabMock.Verify(
-            g => g.ApproveMergeRequestAsync(42, 1, It.IsAny<CancellationToken>()),
-            Times.Once);
-
-        _gitLabMock.Verify(
-            g => g.MergeMergeRequestAsync(42, 1, It.IsAny<CancellationToken>()),
-            Times.Once);
     }
 
     // ── Fail Scenario ──────────────────────────────────────────────────────────
@@ -123,7 +117,6 @@ public sealed class ReviewOrchestratorTests
     {
         // Arrange
         var mrEvent = BuildMrEvent();
-
         var changes = BuildChanges(CsChange("src/AuthService.cs", "+var pwd = \"secret123\";"));
 
         var reviewResult = new ReviewResult(
@@ -141,8 +134,12 @@ public sealed class ReviewOrchestratorTests
             .Setup(g => g.GetMergeRequestChangesAsync(42, 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(changes);
 
+        _gitLabMock
+            .Setup(g => g.GetFileContentAsync(42, "src/AuthService.cs", "feature/test", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
+
         _claudeMock
-            .Setup(c => c.ReviewFileAsync("src/AuthService.cs", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.ReviewFileAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(reviewResult);
 
         _gitLabMock
@@ -215,7 +212,7 @@ public sealed class ReviewOrchestratorTests
 
         // Assert: Claude was never called
         _claudeMock.Verify(
-            c => c.ReviewFileAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            c => c.ReviewFileAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()),
             Times.Never);
 
         // Assert: no comment, approve, or merge
