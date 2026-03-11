@@ -73,6 +73,32 @@ public sealed class GitLabApiClient : IGitLabService
     }
 
     /// <inheritdoc />
+    public async Task<string?> GetFileContentAsync(
+        int projectId,
+        string filePath,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        // GitLab API: GET /api/v4/projects/{id}/repository/files/{encoded_path}/raw?ref={branch}
+        var encodedPath = Uri.EscapeDataString(filePath);
+        var url = $"/api/v4/projects/{projectId}/repository/files/{encodedPath}/raw?ref={branch}";
+
+        _logger.LogDebug("GET file content {File} @ {Branch}", filePath, branch);
+
+        var response = await _httpClient.GetAsync(url, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "Could not fetch file content for {File} — HTTP {Status}",
+                filePath, (int)response.StatusCode);
+            return null;
+        }
+
+        return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task PostCommentAsync(
         int projectId,
         int mrIid,

@@ -14,6 +14,12 @@ builder.Services.Configure<GitLabOptions>(
 builder.Services.Configure<AnthropicOptions>(
     builder.Configuration.GetSection("Anthropic"));
 
+builder.Services.Configure<OpenAiOptions>(
+    builder.Configuration.GetSection("OpenAI"));
+
+builder.Services.Configure<GeminiOptions>(
+    builder.Configuration.GetSection("Gemini"));
+
 // ─── HTTP Clients ─────────────────────────────────────────────────────────────
 
 // GitLab typed client
@@ -37,8 +43,35 @@ builder.Services.AddHttpClient<IAnthropicApiClient, AnthropicApiClient>((sp, cli
     client.Timeout = TimeSpan.FromSeconds(120);
 });
 
+// OpenAI typed client
+builder.Services.AddHttpClient<IOpenAiApiClient, OpenAiApiClient>((sp, client) =>
+{
+    var options = sp.GetRequiredService<IOptions<OpenAiOptions>>().Value;
+    client.BaseAddress = new Uri("https://api.openai.com");
+    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {options.ApiKey}");
+    client.DefaultRequestHeaders.Add("User-Agent", "CodeReviewAgent/1.0");
+    client.Timeout = TimeSpan.FromSeconds(120);
+});
+
+// Gemini typed client — API key is passed as query param, not header
+builder.Services.AddHttpClient<IGeminiApiClient, GeminiApiClient>((sp, client) =>
+{
+    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com");
+    client.DefaultRequestHeaders.Add("User-Agent", "CodeReviewAgent/1.0");
+    client.Timeout = TimeSpan.FromSeconds(120);
+});
+
 // ─── Application Services ────────────────────────────────────────────────────
+// Đăng ký tất cả service
 builder.Services.AddScoped<IClaudeReviewService, ClaudeReviewService>();
+builder.Services.AddScoped<IChatGptReviewService, ChatGptReviewService>();
+builder.Services.AddScoped<IGeminiReviewService, GeminiReviewService>();
+
+// 👇 Chọn AI engine tại đây — chỉ uncomment 1 dòng
+// builder.Services.AddScoped<ICodeReviewService, ClaudeReviewService>();
+// builder.Services.AddScoped<ICodeReviewService, ChatGptReviewService>();
+builder.Services.AddScoped<ICodeReviewService, GeminiReviewService>();
+
 builder.Services.AddScoped<IReviewOrchestrator, ReviewOrchestrator>();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────

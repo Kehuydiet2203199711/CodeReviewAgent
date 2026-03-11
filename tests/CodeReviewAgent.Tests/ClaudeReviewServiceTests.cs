@@ -48,7 +48,8 @@ public sealed class ClaudeReviewServiceTests
             .ReturnsAsync(expectedJson);
 
         // Act
-        var result = await _service.ReviewFileAsync("src/Foo.cs", "+public void Bar() { }");
+        var result = await _service.ReviewFileAsync(
+            BuildContext("src/Foo.cs", "+public void Bar() { }"));
 
         // Assert
         Assert.NotNull(result);
@@ -93,7 +94,8 @@ public sealed class ClaudeReviewServiceTests
             .ReturnsAsync(expectedJson);
 
         // Act
-        var result = await _service.ReviewFileAsync("src/Auth.cs", "+var key = \"abc123\";");
+        var result = await _service.ReviewFileAsync(
+            BuildContext("src/Auth.cs", "+var key = \"abc123\";"));
 
         // Assert
         Assert.NotNull(result);
@@ -140,7 +142,8 @@ public sealed class ClaudeReviewServiceTests
             });
 
         // Act
-        var result = await _service.ReviewFileAsync("src/Retry.cs", "+int x = 42;");
+        var result = await _service.ReviewFileAsync(
+            BuildContext("src/Retry.cs", "+int x = 42;"));
 
         // Assert
         Assert.NotNull(result);
@@ -165,7 +168,8 @@ public sealed class ClaudeReviewServiceTests
             .ThrowsAsync(new HttpRequestException("Service unavailable"));
 
         // Act
-        var result = await _service.ReviewFileAsync("src/Broken.cs", "+var x = 1;");
+        var result = await _service.ReviewFileAsync(
+            BuildContext("src/Broken.cs", "+var x = 1;"));
 
         // Assert
         Assert.Null(result);
@@ -188,9 +192,26 @@ public sealed class ClaudeReviewServiceTests
             .ReturnsAsync("This is not JSON at all");
 
         // Act
-        var result = await _service.ReviewFileAsync("src/Bad.cs", "+int y = 0;");
+        var result = await _service.ReviewFileAsync(
+            BuildContext("src/Bad.cs", "+int y = 0;"));
 
         // Assert
         Assert.Null(result);
     }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static FileReviewContext BuildContext(string filePath, string diff) =>
+        new(
+            FilePath: filePath,
+            Diff: diff,
+            MrTitle: "Test MR",
+            SourceBranch: "feature/test",
+            TargetBranch: "main",
+            IsNewFile: false,
+            IsRenamedFile: false,
+            OldPath: null,
+            FullContent: null,
+            OtherChangedFiles: []
+        );
 }

@@ -42,3 +42,5 @@ desktop.ini
 ## Logs
 *.log
 logs/
+/src/CodeReviewAgent.Api/appsettings.json
+/src/CodeReviewAgent.Api/appsettings.Development.json

@@ -6,12 +6,12 @@ using Microsoft.Extensions.Logging;
 namespace CodeReviewAgent.Core.Services;
 
 /// <summary>
-/// Implements C# code review using the Anthropic Claude AI API.
+/// Implements C# code review using the Google Gemini API.
 /// </summary>
-public sealed class ClaudeReviewService : IClaudeReviewService
+public sealed class GeminiReviewService : IGeminiReviewService
 {
-    private readonly IAnthropicApiClient _anthropicClient;
-    private readonly ILogger<ClaudeReviewService> _logger;
+    private readonly IGeminiApiClient _geminiClient;
+    private readonly ILogger<GeminiReviewService> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -19,13 +19,13 @@ public sealed class ClaudeReviewService : IClaudeReviewService
     };
 
     /// <summary>
-    /// Initializes a new instance of <see cref="ClaudeReviewService"/>.
+    /// Initializes a new instance of <see cref="GeminiReviewService"/>.
     /// </summary>
-    public ClaudeReviewService(
-        IAnthropicApiClient anthropicClient,
-        ILogger<ClaudeReviewService> logger)
+    public GeminiReviewService(
+        IGeminiApiClient geminiClient,
+        ILogger<GeminiReviewService> logger)
     {
-        _anthropicClient = anthropicClient;
+        _geminiClient = geminiClient;
         _logger = logger;
     }
 
@@ -36,25 +36,27 @@ public sealed class ClaudeReviewService : IClaudeReviewService
     {
         var userMessage = CSharpReviewPrompt.BuildUserMessage(context);
 
-        // Attempt the API call with one retry on failure
         for (int attempt = 1; attempt <= 2; attempt++)
         {
             try
             {
                 _logger.LogDebug(
-                    "Calling Claude API for file {File} (attempt {Attempt})",
+                    "Calling Gemini API for file {File} (attempt {Attempt})",
                     context.FilePath, attempt);
 
-                var rawJson = await _anthropicClient.SendMessageAsync(
+                var rawJson = await _geminiClient.SendMessageAsync(
                     CSharpReviewPrompt.SystemPrompt,
                     userMessage,
                     cancellationToken);
 
-                var result = JsonSerializer.Deserialize<ReviewResult>(rawJson, JsonOptions);
+                // Gemini sometimes wraps response in ```json ... ``` — strip it
+                var cleaned = StripMarkdownCodeBlock(rawJson);
+
+                var result = JsonSerializer.Deserialize<ReviewResult>(cleaned, JsonOptions);
 
                 if (result is null)
                 {
-                    _logger.LogWarning("Claude returned null result for {File}", context.FilePath);
+                    _logger.LogWarning("Gemini returned null result for {File}", context.FilePath);
                     return null;
                 }
 
@@ -67,15 +69,14 @@ public sealed class ClaudeReviewService : IClaudeReviewService
             catch (JsonException ex)
             {
                 _logger.LogError(ex,
-                    "Failed to parse Claude response for {File} (attempt {Attempt})",
+                    "Failed to parse Gemini response for {File} (attempt {Attempt})",
                     context.FilePath, attempt);
-                // JSON parse errors won't improve on retry — bail out
                 return null;
             }
             catch (Exception ex) when (attempt == 1)
             {
                 _logger.LogWarning(ex,
-                    "Claude API call failed for {File} — retrying (attempt {Attempt})",
+                    "Gemini API call failed for {File} — retrying (attempt {Attempt})",
                     context.FilePath, attempt);
 
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
@@ -83,12 +84,28 @@ public sealed class ClaudeReviewService : IClaudeReviewService
             catch (Exception ex)
             {
                 _logger.LogError(ex,
-                    "Claude API call failed for {File} after {Attempt} attempts — skipping",
+                    "Gemini API call failed for {File} after {Attempt} attempts — skipping",
                     context.FilePath, attempt);
                 return null;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Strips markdown code fences (```json ... ```) that Gemini sometimes wraps around JSON.
+    /// </summary>
+    private static string StripMarkdownCodeBlock(string raw)
+    {
+        var trimmed = raw.Trim();
+        if (trimmed.StartsWith("```"))
+        {
+            var firstNewline = trimmed.IndexOf('\n');
+            var lastFence = trimmed.LastIndexOf("```");
+            if (firstNewline > 0 && lastFence > firstNewline)
+                return trimmed.Substring(firstNewline + 1, lastFence - firstNewline - 1).Trim();
+        }
+        return trimmed;
     }
 }

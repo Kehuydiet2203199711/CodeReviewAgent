@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Prompts\CSharpReviewPrompt.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />

@@ -1,69 +1,72 @@
+using System.Text;
+using CodeReviewAgent.Core.Models;
+
 namespace CodeReviewAgent.Core.Prompts;
 
 /// <summary>
-/// Provides the system prompt used for C# code review by the Claude AI model.
+/// Provides the system prompt used for C# code review by AI models.
+/// The prompt is loaded from the embedded CSharpReviewPrompt.md resource file.
 /// </summary>
 public static class CSharpReviewPrompt
 {
     /// <summary>
-    /// The system prompt instructing Claude to perform a structured C# code review.
+    /// The system prompt instructing the AI to perform a structured C# code review.
+    /// Loaded at startup from the embedded Prompts/CSharpReviewPrompt.md resource.
     /// </summary>
-    public const string SystemPrompt = """
-        You are a senior C# developer performing an automated code review.
-        Review the following C# code diff and evaluate it against these rules:
+    public static readonly string SystemPrompt;
 
-        ## Naming Conventions
-        - Classes, Methods, Properties: PascalCase
-        - Variables, Parameters: camelCase
-        - Interfaces must start with "I" (e.g., IService, IRepository)
-        - No magic numbers or magic strings — use constants or config
-
-        ## Code Quality
-        - Methods must not exceed 50 lines
-        - Cyclomatic complexity must not exceed 10
-        - No commented-out code blocks
-        - No dead code or unused variables/imports
-
-        ## C# Best Practices
-        - Always use async/await — never use .Result or .Wait()
-        - Always dispose IDisposable objects using "using" statement
-        - Never catch generic Exception without logging it
-        - Prefer null-conditional (?.) and null-coalescing (??) operators
-        - Use var only when the type is obvious from the right-hand side
-
-        ## Security
-        - Never hardcode connection strings, passwords, or API keys
-        - Always validate and sanitize inputs
-        - Never log sensitive data (passwords, tokens, PII)
-
-        ## Performance
-        - Never use string concatenation inside loops — use StringBuilder
-        - Avoid unnecessary LINQ in performance-critical paths
-
-        ## Output
-        Respond ONLY with a valid JSON object in this exact format (no explanation, no markdown):
-        {
-          "passed": true,
-          "summary": "Short description of review result",
-          "issues": [
-            {
-              "file": "path/to/File.cs",
-              "line": 42,
-              "severity": "critical|high|medium|low",
-              "rule": "Rule name",
-              "message": "Description of the issue",
-              "suggestion": "How to fix it"
-            }
-          ]
-        }
-        """;
+    static CSharpReviewPrompt()
+    {
+        var assembly = typeof(CSharpReviewPrompt).Assembly;
+        const string resourceName = "CodeReviewAgent.Core.Prompts.CSharpReviewPrompt.md";
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
+        using var reader = new StreamReader(stream);
+        SystemPrompt = reader.ReadToEnd();
+    }
 
     /// <summary>
-    /// Builds the user message containing the file path and its diff content.
+    /// Builds the user message sent to the AI, incorporating all available context:
+    /// MR metadata, file status, full file content, list of other changed files, and the diff.
     /// </summary>
-    /// <param name="filePath">The path of the file being reviewed.</param>
-    /// <param name="diff">The unified diff content of the file.</param>
-    /// <returns>A formatted user message for the Claude API.</returns>
-    public static string BuildUserMessage(string filePath, string diff) =>
-        $"Review the following C# diff for file `{filePath}`:\n\n```diff\n{diff}\n```";
+    /// <param name="context">The rich review context for the file being reviewed.</param>
+    /// <returns>A formatted user message for the AI API.</returns>
+    public static string BuildUserMessage(FileReviewContext context)
+    {
+        var fileStatus = context.IsNewFile ? "NEW FILE"
+            : context.IsRenamedFile ? $"RENAMED from `{context.OldPath}`"
+            : "MODIFIED";
+
+        var sb = new StringBuilder();
+
+        sb.AppendLine("## Merge Request Context");
+        sb.AppendLine($"- **Title**: {context.MrTitle}");
+        sb.AppendLine($"- **Branch**: `{context.SourceBranch}` → `{context.TargetBranch}`");
+
+        if (context.OtherChangedFiles.Count > 0)
+        {
+            var others = string.Join(", ", context.OtherChangedFiles.Select(f => $"`{f}`"));
+            sb.AppendLine($"- **Other C# files changed in this MR**: {others}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine($"## File: `{context.FilePath}` [{fileStatus}]");
+
+        if (!string.IsNullOrWhiteSpace(context.FullContent))
+        {
+            sb.AppendLine();
+            sb.AppendLine("### Full File Content (for reference):");
+            sb.AppendLine("```csharp");
+            sb.AppendLine(context.FullContent);
+            sb.AppendLine("```");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("### Changes (diff):");
+        sb.AppendLine("```diff");
+        sb.AppendLine(context.Diff);
+        sb.AppendLine("```");
+
+        return sb.ToString();
+    }
 }

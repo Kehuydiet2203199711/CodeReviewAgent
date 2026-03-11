@@ -20,6 +20,20 @@ public interface IGitLabService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Fetches the raw source content of a file at a specific branch ref.
+    /// Returns <c>null</c> if the file could not be retrieved (e.g. 404, permissions).
+    /// </summary>
+    /// <param name="projectId">The GitLab project ID.</param>
+    /// <param name="filePath">The file path relative to the repository root.</param>
+    /// <param name="branch">The branch name to read the file from.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    Task<string?> GetFileContentAsync(
+        int projectId,
+        string filePath,
+        string branch,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Posts a Markdown comment to the specified merge request.
     /// </summary>
     /// <param name="projectId">The GitLab project ID.</param>
