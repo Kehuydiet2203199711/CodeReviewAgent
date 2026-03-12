@@ -62,15 +62,18 @@ builder.Services.AddHttpClient<IGeminiApiClient, GeminiApiClient>((sp, client) =
 });
 
 // ─── Application Services ────────────────────────────────────────────────────
-// Đăng ký tất cả service
+// Legacy single-agent services (kept for reference / future use)
 builder.Services.AddScoped<IClaudeReviewService, ClaudeReviewService>();
 builder.Services.AddScoped<IChatGptReviewService, ChatGptReviewService>();
 builder.Services.AddScoped<IGeminiReviewService, GeminiReviewService>();
-
-// 👇 Chọn AI engine tại đây — chỉ uncomment 1 dòng
-// builder.Services.AddScoped<ICodeReviewService, ClaudeReviewService>();
-// builder.Services.AddScoped<ICodeReviewService, ChatGptReviewService>();
 builder.Services.AddScoped<ICodeReviewService, GeminiReviewService>();
+
+// ─── Multi-Agent Pipeline Services ───────────────────────────────────────────
+// All 4 agents use IGeminiApiClient (Gemini) for high-quality structured analysis
+builder.Services.AddScoped<IConventionReviewService, ConventionReviewService>();
+builder.Services.AddScoped<IPerformanceReviewService, PerformanceReviewService>();
+builder.Services.AddScoped<ISecurityReviewService, SecurityReviewService>();
+builder.Services.AddScoped<IBaseReviewService, BaseReviewService>();
 
 builder.Services.AddScoped<IReviewOrchestrator, ReviewOrchestrator>();
 

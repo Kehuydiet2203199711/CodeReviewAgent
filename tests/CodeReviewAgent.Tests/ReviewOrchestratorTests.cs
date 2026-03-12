@@ -12,16 +12,28 @@ namespace CodeReviewAgent.Tests;
 public sealed class ReviewOrchestratorTests
 {
     private readonly Mock<IGitLabService> _gitLabMock;
-    private readonly Mock<IClaudeReviewService> _claudeMock;
+    private readonly Mock<IConventionReviewService> _conventionMock;
+    private readonly Mock<IPerformanceReviewService> _performanceMock;
+    private readonly Mock<ISecurityReviewService> _securityMock;
+    private readonly Mock<IBaseReviewService> _baseMock;
     private readonly ILogger<ReviewOrchestrator> _logger;
     private readonly ReviewOrchestrator _orchestrator;
 
     public ReviewOrchestratorTests()
     {
         _gitLabMock = new Mock<IGitLabService>(MockBehavior.Strict);
-        _claudeMock = new Mock<IClaudeReviewService>(MockBehavior.Strict);
+        _conventionMock = new Mock<IConventionReviewService>(MockBehavior.Strict);
+        _performanceMock = new Mock<IPerformanceReviewService>(MockBehavior.Strict);
+        _securityMock = new Mock<ISecurityReviewService>(MockBehavior.Strict);
+        _baseMock = new Mock<IBaseReviewService>(MockBehavior.Strict);
         _logger = new LoggerFactory().CreateLogger<ReviewOrchestrator>();
-        _orchestrator = new ReviewOrchestrator(_gitLabMock.Object, _claudeMock.Object, _logger);
+        _orchestrator = new ReviewOrchestrator(
+            _gitLabMock.Object,
+            _conventionMock.Object,
+            _performanceMock.Object,
+            _securityMock.Object,
+            _baseMock.Object,
+            _logger);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -53,48 +65,69 @@ public sealed class ReviewOrchestratorTests
         new(OldPath: path, NewPath: path, Diff: "+# readme",
             NewFile: false, RenamedFile: false, DeletedFile: false);
 
+    private static SpecializedCodeIssue BuildIssue(string severity, string file = "src/OrderService.cs") =>
+        new(IssueId: Guid.NewGuid().ToString(),
+            File: file,
+            LineStart: 10,
+            LineEnd: 10,
+            Severity: severity,
+            Category: "convention",
+            Title: "Test issue",
+            Description: "A test issue description",
+            Reasoning: new IssueReasoning("reason", "verified", "no fp"),
+            Suggestion: "Fix it",
+            Score: 75);
+
+    private void SetupSpecializedAgents(string filePath,
+        List<SpecializedCodeIssue>? conventionResult = null,
+        List<SpecializedCodeIssue>? performanceResult = null,
+        List<SpecializedCodeIssue>? securityResult = null)
+    {
+        _conventionMock
+            .Setup(s => s.ReviewAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(conventionResult ?? []);
+        _performanceMock
+            .Setup(s => s.ReviewAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(performanceResult ?? []);
+        _securityMock
+            .Setup(s => s.ReviewAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(securityResult ?? []);
+    }
+
     // ── Pass Scenario ──────────────────────────────────────────────────────────
 
     /// <summary>
     /// When no critical or high issues are found, the orchestrator should post a LGTM comment.
     /// </summary>
     [Fact]
-    public async Task OrchestrateReviewAsync_WhenNoCriticalOrHighIssues_ApprovesAndMerges()
+    public async Task OrchestrateReviewAsync_WhenNoCriticalOrHighIssues_PostsLgtm()
     {
         // Arrange
         var mrEvent = BuildMrEvent();
         var changes = BuildChanges(CsChange("src/OrderService.cs", "+public void Process() { }"));
 
-        var reviewResult = new ReviewResult(
-            Passed: true,
-            Summary: "Code looks good",
-            Issues: new List<CodeIssue>
-            {
-                new("src/OrderService.cs", 10, "low", "Naming", "Variable name could be better", "Use descriptive name")
-            });
+        var mediumIssue = BuildIssue("MEDIUM", "src/OrderService.cs");
+        var synthesizedIssues = new List<SpecializedCodeIssue> { mediumIssue };
 
         _gitLabMock
             .Setup(g => g.GetMergeRequestChangesAsync(42, 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(changes);
-
         _gitLabMock
             .Setup(g => g.GetFileContentAsync(42, "src/OrderService.cs", "feature/test", It.IsAny<CancellationToken>()))
             .ReturnsAsync("public class OrderService { }");
 
-        _claudeMock
-            .Setup(c => c.ReviewFileAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(reviewResult);
+        SetupSpecializedAgents("src/OrderService.cs");
+
+        _baseMock
+            .Setup(b => b.SynthesizeAsync(It.IsAny<FileReviewContext>(),
+                It.IsAny<List<SpecializedCodeIssue>>(),
+                It.IsAny<List<SpecializedCodeIssue>>(),
+                It.IsAny<List<SpecializedCodeIssue>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(synthesizedIssues);
 
         _gitLabMock
             .Setup(g => g.PostCommentAsync(42, 1, It.Is<string>(s => s.Contains("LGTM")), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
-        _gitLabMock
-            .Setup(g => g.ApproveMergeRequestAsync(42, 1, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
-        _gitLabMock
-            .Setup(g => g.MergeMergeRequestAsync(42, 1, It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         // Act
@@ -109,42 +142,42 @@ public sealed class ReviewOrchestratorTests
     // ── Fail Scenario ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// When critical or high issues are found, the orchestrator should post an issue
-    /// table comment and must NOT approve or merge.
+    /// When critical issues are found, the orchestrator should post an issue table comment.
     /// </summary>
     [Fact]
-    public async Task OrchestrateReviewAsync_WhenCriticalIssuesFound_PostsIssueTableAndSkipsMerge()
+    public async Task OrchestrateReviewAsync_WhenCriticalIssuesFound_PostsIssueTable()
     {
         // Arrange
         var mrEvent = BuildMrEvent();
         var changes = BuildChanges(CsChange("src/AuthService.cs", "+var pwd = \"secret123\";"));
 
-        var reviewResult = new ReviewResult(
-            Passed: false,
-            Summary: "Found hardcoded credentials",
-            Issues: new List<CodeIssue>
-            {
-                new("src/AuthService.cs", 5, "critical", "Security",
-                    "Hardcoded password detected", "Move to environment variable or secret store"),
-                new("src/AuthService.cs", 12, "high", "C# Best Practices",
-                    "Using .Result blocks async thread", "Use await instead of .Result")
-            });
+        var criticalIssue = BuildIssue("CRITICAL", "src/AuthService.cs") with
+        {
+            Title = "Hardcoded password detected",
+            Category = "security"
+        };
+        var synthesizedIssues = new List<SpecializedCodeIssue> { criticalIssue };
 
         _gitLabMock
             .Setup(g => g.GetMergeRequestChangesAsync(42, 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(changes);
-
         _gitLabMock
             .Setup(g => g.GetFileContentAsync(42, "src/AuthService.cs", "feature/test", It.IsAny<CancellationToken>()))
             .ReturnsAsync((string?)null);
 
-        _claudeMock
-            .Setup(c => c.ReviewFileAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(reviewResult);
+        SetupSpecializedAgents("src/AuthService.cs");
+
+        _baseMock
+            .Setup(b => b.SynthesizeAsync(It.IsAny<FileReviewContext>(),
+                It.IsAny<List<SpecializedCodeIssue>>(),
+                It.IsAny<List<SpecializedCodeIssue>>(),
+                It.IsAny<List<SpecializedCodeIssue>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(synthesizedIssues);
 
         _gitLabMock
             .Setup(g => g.PostCommentAsync(42, 1,
-                It.Is<string>(s => s.Contains("Issues found") || s.Contains("critical")),
+                It.Is<string>(s => s.Contains("Issues found") || s.Contains("CRITICAL")),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
@@ -154,7 +187,7 @@ public sealed class ReviewOrchestratorTests
         // Assert: comment was posted with issue details
         _gitLabMock.Verify(
             g => g.PostCommentAsync(42, 1,
-                It.Is<string>(s => s.Contains("critical") || s.Contains("Issues found")),
+                It.Is<string>(s => s.Contains("CRITICAL") || s.Contains("Issues found")),
                 It.IsAny<CancellationToken>()),
             Times.Once);
 
@@ -162,7 +195,6 @@ public sealed class ReviewOrchestratorTests
         _gitLabMock.Verify(
             g => g.ApproveMergeRequestAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
-
         _gitLabMock.Verify(
             g => g.MergeMergeRequestAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
@@ -210,12 +242,12 @@ public sealed class ReviewOrchestratorTests
         // Act
         await _orchestrator.OrchestrateReviewAsync(mrEvent);
 
-        // Assert: Claude was never called
-        _claudeMock.Verify(
-            c => c.ReviewFileAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()),
+        // Assert: specialized agents were never called
+        _conventionMock.Verify(
+            c => c.ReviewAsync(It.IsAny<FileReviewContext>(), It.IsAny<CancellationToken>()),
             Times.Never);
 
-        // Assert: no comment, approve, or merge
+        // Assert: no comment posted
         _gitLabMock.Verify(
             g => g.PostCommentAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);

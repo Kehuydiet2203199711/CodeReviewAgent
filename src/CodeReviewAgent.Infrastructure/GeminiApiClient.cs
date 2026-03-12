@@ -76,7 +76,8 @@ public sealed class GeminiApiClient : IGeminiApiClient
             generationConfig = new
             {
                 maxOutputTokens = _options.MaxTokens,
-                temperature = 0.2   // low temperature for deterministic review output
+                temperature = 0.2,                      // low temperature for deterministic review output
+                responseMimeType = "application/json"   // enforce JSON-only output, no markdown fences or prose
             }
         };
 

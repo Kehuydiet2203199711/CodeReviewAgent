@@ -1,30 +1,39 @@
 using System.Text;
+using System.Text.Json;
 using CodeReviewAgent.Core.Models;
 using Microsoft.Extensions.Logging;
 
 namespace CodeReviewAgent.Core.Services;
 
 /// <summary>
-/// Implements the full code review orchestration pipeline.
+/// Implements the full code review orchestration pipeline using the multi-agent approach:
+/// Convention, Performance, and Security agents run in parallel per file,
+/// then BaseReviewService synthesizes their findings into a final curated list.
 /// </summary>
 public sealed class ReviewOrchestrator : IReviewOrchestrator
 {
     private const string SkipLabel = "skip-ai-review";
 
     private readonly IGitLabService _gitLabService;
-    private readonly ICodeReviewService _reviewService;
+    private readonly IConventionReviewService _conventionService;
+    private readonly IPerformanceReviewService _performanceService;
+    private readonly ISecurityReviewService _securityService;
+    private readonly IBaseReviewService _baseReviewService;
     private readonly ILogger<ReviewOrchestrator> _logger;
 
-    /// <summary>
-    /// Initializes a new instance of <see cref="ReviewOrchestrator"/>.
-    /// </summary>
     public ReviewOrchestrator(
         IGitLabService gitLabService,
-        ICodeReviewService reviewService,
+        IConventionReviewService conventionService,
+        IPerformanceReviewService performanceService,
+        ISecurityReviewService securityService,
+        IBaseReviewService baseReviewService,
         ILogger<ReviewOrchestrator> logger)
     {
         _gitLabService = gitLabService;
-        _reviewService = reviewService;
+        _conventionService = conventionService;
+        _performanceService = performanceService;
+        _securityService = securityService;
+        _baseReviewService = baseReviewService;
         _logger = logger;
     }
 
@@ -70,12 +79,11 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
         }
 
         _logger.LogInformation(
-            "Reviewing {FileCount} C# file(s) in MR !{MrIid}", csFiles.Count, mrIid);
+            "Reviewing {FileCount} C# file(s) in MR !{MrIid} using multi-agent pipeline",
+            csFiles.Count, mrIid);
 
-        // Build the full list of changed C# file paths for cross-file context
         var allChangedPaths = csFiles.Select(c => c.NewPath).ToList();
-
-        var allIssues = new List<CodeIssue>();
+        var allIssues = new List<SpecializedCodeIssue>();
         var failedFiles = new List<string>();
 
         foreach (var change in csFiles)
@@ -88,7 +96,6 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
 
             _logger.LogDebug("Reviewing file: {File}", change.NewPath);
 
-            // Fix 3: Fetch full file content for richer context (best-effort, non-blocking)
             string? fullContent = null;
             try
             {
@@ -102,7 +109,6 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
                     change.NewPath);
             }
 
-            // Fix 1+2: Build rich context with MR metadata, file status, and sibling files
             var context = new FileReviewContext(
                 FilePath: change.NewPath,
                 Diff: change.Diff,
@@ -116,21 +122,20 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
                 OtherChangedFiles: allChangedPaths.Where(p => p != change.NewPath).ToList()
             );
 
-            var result = await _reviewService.ReviewFileAsync(context, cancellationToken);
+            var fileIssues = await RunMultiAgentPipelineAsync(context, cancellationToken);
 
-            if (result is null)
+            if (fileIssues is null)
             {
-                // API error — record as failed, do NOT treat as pass
                 _logger.LogWarning(
-                    "Review failed for {File} — API error, will block MR", change.NewPath);
+                    "Review failed for {File} — synthesis agent returned null, will block MR",
+                    change.NewPath);
                 failedFiles.Add(change.NewPath);
                 continue;
             }
 
-            allIssues.AddRange(result.Issues);
+            allIssues.AddRange(fileIssues);
         }
 
-        // If any file could not be reviewed → block MR with error comment
         if (failedFiles.Count > 0)
         {
             _logger.LogError(
@@ -142,18 +147,14 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
         }
 
         var criticalIssues = allIssues
-            .Where(i => i.Severity.Equals("critical", StringComparison.OrdinalIgnoreCase))
+            .Where(i => i.Severity.Equals("CRITICAL", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         var highIssues = allIssues
-            .Where(i => i.Severity.Equals("high", StringComparison.OrdinalIgnoreCase))
+            .Where(i => i.Severity.Equals("HIGH", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        var lowIssues = allIssues
-            .Where(i => i.Severity.Equals("low", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        bool passed = criticalIssues.Count == 0 && highIssues.Count == 0 && lowIssues.Count == 0;
+        bool passed = criticalIssues.Count == 0 && highIssues.Count == 0;
 
         _logger.LogInformation(
             "Review complete for MR !{MrIid}: passed={Passed}, critical={Critical}, high={High}",
@@ -165,15 +166,48 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
             await HandleFailAsync(projectId, mrIid, allIssues, cancellationToken);
     }
 
+    /// <summary>
+    /// Fans out to 3 specialized agents in parallel, then synthesizes with the base agent.
+    /// Returns null only if the synthesis (base) agent fails — specialized agent failures
+    /// are treated as degraded mode (empty issue list) so the pipeline continues.
+    /// </summary>
+    private async Task<List<SpecializedCodeIssue>?> RunMultiAgentPipelineAsync(
+        FileReviewContext context,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "[MultiAgent] Starting parallel specialized review for {File}", context.FilePath);
+
+        var conventionTask  = _conventionService.ReviewAsync(context, cancellationToken);
+        var performanceTask = _performanceService.ReviewAsync(context, cancellationToken);
+        var securityTask    = _securityService.ReviewAsync(context, cancellationToken);
+
+        await Task.WhenAll(conventionTask, performanceTask, securityTask);
+
+        var conventionIssues  = conventionTask.Result  ?? [];
+        var performanceIssues = performanceTask.Result ?? [];
+        var securityIssues    = securityTask.Result    ?? [];
+
+        _logger.LogInformation(
+            "[MultiAgent] {File}: convention={C}, performance={P}, security={S} raw issues — calling synthesis",
+            context.FilePath,
+            conventionIssues.Count,
+            performanceIssues.Count,
+            securityIssues.Count);
+
+        return await _baseReviewService.SynthesizeAsync(
+            context, conventionIssues, performanceIssues, securityIssues, cancellationToken);
+    }
+
     private async Task HandlePassAsync(
         int projectId, int mrIid, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("MR !{MrIid} passed review — posting LGTM, approving, merging", mrIid);
+        _logger.LogInformation("MR !{MrIid} passed review — posting LGTM", mrIid);
 
         var comment = """
             ✅ **LGTM!** AI Code Review passed — no critical or high issues found.
 
-            *Reviewed by AI Agent · Merged automatically.*
+            *Reviewed by AI Agent (multi-agent pipeline: Convention · Performance · Security · Synthesis)*
             """;
 
         await _gitLabService.PostCommentAsync(projectId, mrIid, comment, cancellationToken);
@@ -184,13 +218,13 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
     private async Task HandleFailAsync(
         int projectId,
         int mrIid,
-        List<CodeIssue> allIssues,
+        List<SpecializedCodeIssue> allIssues,
         CancellationToken cancellationToken)
     {
         var criticalCount = allIssues.Count(i =>
-            i.Severity.Equals("critical", StringComparison.OrdinalIgnoreCase));
+            i.Severity.Equals("CRITICAL", StringComparison.OrdinalIgnoreCase));
         var highCount = allIssues.Count(i =>
-            i.Severity.Equals("high", StringComparison.OrdinalIgnoreCase));
+            i.Severity.Equals("HIGH", StringComparison.OrdinalIgnoreCase));
 
         _logger.LogInformation(
             "MR !{MrIid} failed review — posting issue table (critical={C}, high={H})",
@@ -226,7 +260,7 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
     }
 
     private static string BuildFailComment(
-        List<CodeIssue> issues, int criticalCount, int highCount)
+        List<SpecializedCodeIssue> issues, int criticalCount, int highCount)
     {
         var sb = new StringBuilder();
         sb.AppendLine("## 🤖 AI Code Review — ❌ Issues found");
@@ -236,54 +270,56 @@ public sealed class ReviewOrchestrator : IReviewOrchestrator
 
         var blocking = issues
             .Where(i =>
-                i.Severity.Equals("critical", StringComparison.OrdinalIgnoreCase) ||
-                i.Severity.Equals("high", StringComparison.OrdinalIgnoreCase))
+                i.Severity.Equals("CRITICAL", StringComparison.OrdinalIgnoreCase) ||
+                i.Severity.Equals("HIGH", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (blocking.Count > 0)
         {
             sb.AppendLine("### 🔴 Critical & 🟠 High Issues");
             sb.AppendLine();
-            sb.AppendLine("| File | Line | Severity | Rule | Issue | Suggestion |");
-            sb.AppendLine("|------|------|----------|------|-------|------------|");
+            sb.AppendLine("| File | Lines | Severity | Category | Issue | Suggestion | Score |");
+            sb.AppendLine("|------|-------|----------|----------|-------|------------|-------|");
             foreach (var issue in blocking)
             {
-                var icon = issue.Severity.Equals("critical", StringComparison.OrdinalIgnoreCase)
-                    ? "🔴 critical" : "🟠 high";
+                var icon = issue.Severity.Equals("CRITICAL", StringComparison.OrdinalIgnoreCase)
+                    ? "🔴 CRITICAL" : "🟠 HIGH";
+                var lines = issue.LineStart == issue.LineEnd
+                    ? $"{issue.LineStart}"
+                    : $"{issue.LineStart}–{issue.LineEnd}";
                 sb.AppendLine(
-                    $"| `{EscapeMarkdown(issue.File)}` | {issue.Line} | {icon} " +
-                    $"| {EscapeMarkdown(issue.Rule)} | {EscapeMarkdown(issue.Message)} " +
-                    $"| {EscapeMarkdown(issue.Suggestion)} |");
+                    $"| `{EscapeMarkdown(issue.File)}` | {lines} | {icon} " +
+                    $"| {EscapeMarkdown(issue.Category)} | **{EscapeMarkdown(issue.Title)}**: {EscapeMarkdown(issue.Description)} " +
+                    $"| {EscapeMarkdown(issue.Suggestion)} | {issue.Score} |");
             }
             sb.AppendLine();
         }
 
         var nonBlocking = issues
-            .Where(i =>
-                i.Severity.Equals("medium", StringComparison.OrdinalIgnoreCase) ||
-                i.Severity.Equals("low", StringComparison.OrdinalIgnoreCase))
+            .Where(i => i.Severity.Equals("MEDIUM", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (nonBlocking.Count > 0)
         {
-            sb.AppendLine("### 🟡 Medium & 🟢 Low Issues (non-blocking)");
+            sb.AppendLine("### 🟡 Medium Issues (non-blocking)");
             sb.AppendLine();
-            sb.AppendLine("| File | Line | Severity | Rule | Issue | Suggestion |");
-            sb.AppendLine("|------|------|----------|------|-------|------------|");
+            sb.AppendLine("| File | Lines | Category | Issue | Suggestion | Score |");
+            sb.AppendLine("|------|-------|----------|-------|------------|-------|");
             foreach (var issue in nonBlocking)
             {
-                var icon = issue.Severity.Equals("medium", StringComparison.OrdinalIgnoreCase)
-                    ? "🟡 medium" : "🟢 low";
+                var lines = issue.LineStart == issue.LineEnd
+                    ? $"{issue.LineStart}"
+                    : $"{issue.LineStart}–{issue.LineEnd}";
                 sb.AppendLine(
-                    $"| `{EscapeMarkdown(issue.File)}` | {issue.Line} | {icon} " +
-                    $"| {EscapeMarkdown(issue.Rule)} | {EscapeMarkdown(issue.Message)} " +
-                    $"| {EscapeMarkdown(issue.Suggestion)} |");
+                    $"| `{EscapeMarkdown(issue.File)}` | {lines} | {EscapeMarkdown(issue.Category)} " +
+                    $"| **{EscapeMarkdown(issue.Title)}**: {EscapeMarkdown(issue.Description)} " +
+                    $"| {EscapeMarkdown(issue.Suggestion)} | {issue.Score} |");
             }
             sb.AppendLine();
         }
 
         sb.AppendLine("---");
-        sb.AppendLine("*Reviewed by AI Agent · Add label `skip-ai-review` to bypass*");
+        sb.AppendLine("*Reviewed by AI Agent (Convention · Performance · Security · Synthesis) · Add label `skip-ai-review` to bypass*");
         return sb.ToString();
     }
 

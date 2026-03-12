@@ -10,6 +10,11 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Prompts\CSharpReviewPrompt.md" />
+    <EmbeddedResource Include="Prompts\PromptCSharp\convention_review.md" />
+    <EmbeddedResource Include="Prompts\PromptCSharp\performance_review.md" />
+    <EmbeddedResource Include="Prompts\PromptCSharp\security_review.md" />
+    <EmbeddedResource Include="Prompts\PromptCSharp\base_review.md" />
+    <EmbeddedResource Include="Prompts\PromptCSharp\output_format.md" />
   </ItemGroup>
 
   <ItemGroup>
